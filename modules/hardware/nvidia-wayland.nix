@@ -12,6 +12,10 @@
     GBM_BACKEND = "nvidia-drm";
     __GLX_VENDOR_LIBRARY_NAME = "nvidia";
     NIXOS_OZONE_WL = "1";
+
+    # nvidia-vaapi-driver: прямой backend работает на Pascal/GTX 1050 и
+    # включает аппаратное декодирование видео в Firefox/Chromium.
+    NVD_BACKEND = "direct";
   };
 
   # Убрано осознанно:

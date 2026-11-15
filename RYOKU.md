@@ -29,10 +29,14 @@
   `browser = null` (берёт твой firefox из PATH, второй не ставит),
   `shell = "fish"`, `updateFlake = "/etc/nixos"`.
 - `scripts/install.sh`: установка одной командой (см. ниже).
-- `modules/hardware/nvidia-wayland.nix`: NVIDIA + Wayland env.
+- `modules/hardware/nvidia-wayland.nix`: NVIDIA + Wayland env, включая
+  `NVD_BACKEND=direct` для аппаратного декодирования на GTX 1050.
 - `modules/hardware/kernel-cachy.nix` / `kernel-stable.nix`: ядро вынесено из
   `configuration.nix`, чтобы варианты не конфликтовали. Раньше это был один
   `kernel.nix`.
+- `configuration.nix` / `modules/useflags.nix`: микрокод Intel для Xeon
+  E5-2680 v4, `irqbalance` на 28 потоков, BBR/fq и тюнинг zram; меню
+  systemd-boot 3 секунды, 15 поколений для отката.
 
 ## Исправленные проблемы исходного конфига
 
@@ -54,41 +58,56 @@
 8. **`hardware-configuration.nix`** — нормально, что его нет: генерируется при
    установке. `install.sh` его сохраняет, а если нет — создаёт сам.
 9. **`secrets/tg-ws-proxy-secret`** — файл в git не лежит (`.gitignore`).
-   Если его нет, система соберётся, но служба tg-ws-proxy не стартует;
-   `install.sh` предупредит и покажет команду создания.
+   `install.sh` сам создаёт его из `/dev/urandom` при первом запуске, так что
+   tg-ws-proxy работает сразу. На других машинах секрет свой — это нормально.
 
 ## Установка
 
-Что нужно заранее:
+Сначала ставишь NixOS **графическим установщиком**, потом один раз запускаешь
+этот скрипт — он разложит конфиг и пересоберёт систему.
 
-- интернет на машине (первая сборка тянет nixpkgs, Ryoku и его закреплённый
-  nixpkgs — это несколько GiB);
-- UEFI-установка NixOS (конфиг использует systemd-boot);
-- свободно хотя бы ~40 GiB в `/nix` (Ryoku + steam + wine занимают немало);
-- эта папка на флешке или в `git clone`.
+Что выбрать в установщике:
 
-При установке NixOS:
+- **UEFI** — конфиг использует **systemd-boot** (не GRUB), меню 3 секунды и
+  15 поколений для отката. Если установщик загрузился в BIOS/CSM, systemd-boot
+  не поставится: переустанови в UEFI-режиме (в BIOS выключи CSM);
+- **не GNOME/KDE** — рабочий стол даст Ryoku, лишняя среда только наставит
+  конфликтующих сервисов;
+- пользователь **steelium** (или поменяй имя в `configuration.nix` и передай
+  `--user`);
+- пароль запомни: он останется паролем для ly;
+- под `/nix` хотя бы ~40 GiB (Ryoku + steam + wine занимают немало);
+- интернет — первая сборка тянет несколько GiB из кэшей.
 
-- в графическом установщике **не выбирай GNOME/KDE** — десктоп даст Ryoku,
-  лишняя среда только наставит конфликтующих сервисов;
-- создай пользователя `steelium` (или потом запусти скрипт с `--user <имя>`);
-- пароль, который задашь при установке, останется твоим паролем для ly.
-
-1. Ставишь NixOS как обычно (UEFI, btrfs или ext4 — не важно).
-2. Копируешь эту папку на машину (флешка/`git clone`) — например в `~/nixos-idk`.
-3. Запускаешь:
+После первой загрузки в установленную систему:
 
 ```bash
+# на свежей NixOS git может отсутствовать. Тогда одноразово:
+nix --extra-experimental-features 'nix-command flakes' \
+  run nixpkgs#git -- clone https://github.com/Im-onecane-btw/nixos-idk ~/nixos-idk
+
+# если git уже есть:
+# git clone https://github.com/Im-onecane-btw/nixos-idk ~/nixos-idk
+
 cd ~/nixos-idk
-sudo ./scripts/install.sh
-# если папка на FAT-флешке и бит «исполняемый» потерялся:
-# sudo bash scripts/install.sh
+sudo bash scripts/install.sh
 ```
 
-Скрипт сам: сделает бэкап `/etc/nixos`, скопирует конфиг, сохранит или
-сгенерирует `hardware-configuration.nix`, вернёт `secrets/`, сбросит
-`flake.lock`, соберёт поколение и **только после успешной сборки** переключится,
-потом предложит задать пароли.
+Если репозиторий ещё не залит на GitHub — распакуй `nixos-idk-ryoku.zip`
+с флешки в `~/nixos-idk` и запусти оттуда.
+
+Скрипт сам:
+
+1. сделает бэкап `/etc/nixos` в `/var/backups/nixos-bootstrap/<дата>`;
+2. скопирует этот конфиг в `/etc/nixos`;
+3. сохранит `hardware-configuration.nix`, созданный установщиком;
+4. создаст `secrets/tg-ws-proxy-secret`;
+5. соберёт поколение и **только после успешной сборки** переключится;
+6. проверит Ryoku, Wayland-сессии и NVIDIA, предложит задать пароли.
+
+Первая сборка идёт с явно подключёнными кэшами CachyOS и Ryoku
+(`cache.lantian.pub`, `ryotunes.cachix.org`), чтобы не собирать ядро и
+Ryotunes из исходников.
 
 Если сборка с ядром CachyOS упадёт (см. риски ниже), скрипт предложит собрать
 с обычным ядром nixpkgs — это отдельный host `nixos-stable-kernel` в том же
@@ -97,13 +116,15 @@ sudo ./scripts/install.sh
 Полезное:
 
 ```bash
-sudo ./scripts/install.sh --dry-run      # показать план, ничего не менять
-sudo ./scripts/install.sh --build-only   # собрать, но не переключать
-sudo ./scripts/install.sh --host nixos-stable-kernel   # сразу с обычным ядром
-sudo ./scripts/install.sh --repo https://github.com/<you>/<repo>.git
+sudo bash scripts/install.sh --dry-run      # показать план, ничего не менять
+sudo bash scripts/install.sh --build-only   # собрать, но не переключать
+sudo bash scripts/install.sh --host nixos-stable-kernel   # сразу с обычным ядром
+sudo bash scripts/install.sh --reset-lock   # заново зафиксировать inputs
+sudo bash scripts/install.sh --repo https://github.com/<you>/<repo>.git
 ```
 
 После перезагрузки в ly выбираешь сессию **Hyprland** — это Ryoku.
+Меню systemd-boot показывается 3 секунды и хранит 15 поколений для отката.
 
 Обновления дальше:
 
@@ -117,10 +138,14 @@ sudo nixos-rebuild switch --flake /etc/nixos#nixos
 
 ## Про `flake.lock`
 
-Он удалён намеренно: inputs изменились (добавлен `ryoku`, пути стали
-относительными), а старый lock всё равно невалиден. При первой сборке Nix
-зафиксирует актуальные версии всех inputs — то есть получишь свежий Ryoku и
+Он удалён из репозитория намеренно: inputs изменились (добавлен `ryoku`, пути
+стали относительными), а старый lock всё равно невалиден. При первой сборке
+Nix зафиксирует актуальные версии всех inputs — то есть получишь свежий Ryoku и
 свежий nixpkgs, без ручного `nix flake update`.
+
+При повторных запусках `install.sh` lock **не трогает** (иначе каждый запуск
+тянул бы другие версии). Обновить inputs принудительно:
+`sudo bash scripts/install.sh --reset-lock`.
 
 ## Самые вероятные места, где сломается
 

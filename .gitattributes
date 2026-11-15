@@ -1,0 +1,6 @@
+# Linux-файлы должны попадать в репозиторий с LF, иначе bash-скрипты
+# ломаются на \r, а Nix-файлы выглядят грязными при каждом checkout.
+* text=auto
+*.sh text eol=lf
+*.nix text eol=lf
+*.md text eol=lf

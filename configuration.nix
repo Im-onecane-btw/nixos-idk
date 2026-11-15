@@ -29,6 +29,7 @@
   boot.loader.systemd-boot.enable = true;
   boot.loader.efi.canTouchEfiVariables = true;
   boot.loader.systemd-boot.configurationLimit = 15; # запас поколений для отката
+  boot.loader.timeout = 3;                           # 3 секунды на выбор поколения
 
   # Двойная загрузка с Windows (раскомментируй и проверь ESP, если нужен Windows
   # в меню systemd-boot; UUID раздела посмотри через `lsblk -f`):
@@ -107,6 +108,12 @@
 
   # Прошивки устройств + микрокод CPU (важно для стабильности)
   hardware.enableRedistributableFirmware = true;
+  # Xeon E5-2680 v4 (Broadwell-EP): свежий микрокод закрывает errata и
+  # улучшает стабильность под нагрузкой.
+  hardware.cpu.intel.updateMicrocode = true;
+
+  # Раскидывает IRQ по 28 потокам Xeon — меньше «залипаний» под нагрузкой.
+  services.irqbalance.enable = true;
 
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 

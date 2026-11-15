@@ -2,20 +2,27 @@
 # =============================================================================
 #  install.sh — разворачивает этот флейк на уже установленном NixOS.
 #
+#  Сценарий: поставил NixOS графическим установщиком (UEFI, пользователь
+#  steelium, без GNOME/KDE) -> загрузился -> git clone -> запустил скрипт.
+#  Скрипт сам разложит файлы в /etc/nixos и пересоберёт систему с Ryoku,
+#  NVIDIA legacy_580 и ядром CachyOS.
+#
 #  Что делает:
 #    1. проверяет, что это NixOS в UEFI и что хватает места
 #    2. делает бэкап текущего /etc/nixos в /var/backups/nixos-bootstrap/<дата>
 #    3. копирует конфиг (из папки рядом со скриптом или из git)
 #    4. сохраняет/генерирует hardware-configuration.nix
-#    5. собирает поколение (build), и только потом переключается (switch)
+#    5. создаёт secrets/tg-ws-proxy-secret, если его нет
+#    6. собирает поколение (build), и только потом переключается (switch)
 #       если сборка с ядром CachyOS упала — предложит собрать с обычным ядром
-#    6. проверяет Ryoku и предлагает задать пароли
+#    7. проверяет Ryoku, Wayland-сессии, NVIDIA и предлагает задать пароли
 #
 #  Использование:
-#    sudo ./scripts/install.sh
-#    sudo ./scripts/install.sh --repo https://github.com/Minish777/nixos-idk.git
-#    sudo ./scripts/install.sh --dry-run
-#    sudo ./scripts/install.sh --build-only
+#    sudo bash scripts/install.sh
+#    sudo bash scripts/install.sh --repo https://github.com/Minish777/nixos-idk.git
+#    sudo bash scripts/install.sh --dry-run
+#    sudo bash scripts/install.sh --build-only
+#    sudo bash scripts/install.sh --reset-lock
 #
 #  Флаги:
 #    --repo URL      клонировать конфиг из git вместо папки рядом со скриптом
@@ -24,6 +31,7 @@
 #                    или nixos-stable-kernel (обычное ядро nixpkgs)
 #    --user NAME     имя пользователя (по умолчанию: steelium)
 #    --build-only    собрать, но не переключать систему
+#    --reset-lock    удалить flake.lock и зафиксировать inputs заново
 #    --no-passwords  не предлагать смену паролей
 #    --dry-run       только показать план, ничего не менять
 #    -y, --yes       без вопросов
@@ -41,6 +49,7 @@ DRY_RUN=0
 ASSUME_YES=0
 BUILD_ONLY=0
 SKIP_PASSWORDS=0
+RESET_LOCK=0
 
 # --- вывод -------------------------------------------------------------------
 if [ -t 1 ]; then
@@ -62,6 +71,7 @@ while [ $# -gt 0 ]; do
     --host)        HOST="${2:?--host требует имя}"; shift 2 ;;
     --user)        TARGET_USER="${2:?--user требует имя}"; shift 2 ;;
     --build-only)  BUILD_ONLY=1; shift ;;
+    --reset-lock)  RESET_LOCK=1; shift ;;
     --no-passwords) SKIP_PASSWORDS=1; shift ;;
     --dry-run)     DRY_RUN=1; shift ;;
     -y|--yes)      ASSUME_YES=1; shift ;;
@@ -134,11 +144,12 @@ if [ "$DRY_RUN" -eq 1 ]; then
   1. бэкап $FLAKE_DIR -> $BACKUP_DIR/<дата>
   2. копирование $SRC -> $FLAKE_DIR (без .git)
   3. hardware-configuration.nix: сохранить существующий или сгенерировать
-  4. rm -f $FLAKE_DIR/flake.lock (inputs изменились)
-  5. nixos-rebuild build --flake $FLAKE_DIR#$HOST
-$( [ "$BUILD_ONLY" -eq 1 ] && echo "  6. (--build-only: switch пропускается)" || echo "  6. nixos-rebuild switch --flake $FLAKE_DIR#$HOST" )
-  7. при падении сборки — предложение собрать с обычным ядром (host nixos-stable-kernel)
-  8. проверка ryoku + пароли
+  4. secrets/tg-ws-proxy-secret: создать, если его нет
+  5. flake.lock: $([ "$RESET_LOCK" -eq 1 ] && echo "удалить (--reset-lock)" || echo "сохранить (создастся при первой сборке)")
+  6. nixos-rebuild build --flake $FLAKE_DIR#$HOST (с кэшами CachyOS + Ryoku)
+$( [ "$BUILD_ONLY" -eq 1 ] && echo "  7. (--build-only: switch пропускается)" || echo "  7. nixos-rebuild switch --flake $FLAKE_DIR#$HOST" )
+  8. при падении сборки — предложение собрать с обычным ядром (host nixos-stable-kernel)
+  9. проверка ryoku, Wayland-сессий, NVIDIA + пароли
 
 EOF
   exit 0
@@ -198,18 +209,37 @@ if [ -d "$backup/secrets" ]; then
 fi
 
 if [ ! -s "$FLAKE_DIR/secrets/tg-ws-proxy-secret" ]; then
-  warn "нет $FLAKE_DIR/secrets/tg-ws-proxy-secret — сама система соберётся,"
-  warn "  но служба tg-ws-proxy не стартует. Создать:"
-  warn "  sudo sh -c 'mkdir -p /etc/nixos/secrets && openssl rand -hex 16 > /etc/nixos/secrets/tg-ws-proxy-secret && chmod 600 /etc/nixos/secrets/tg-ws-proxy-secret'"
+  log "создаю secrets/tg-ws-proxy-secret (случайные 16 байт)"
+  mkdir -p "$FLAKE_DIR/secrets"
+  ( umask 077; head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' \
+      > "$FLAKE_DIR/secrets/tg-ws-proxy-secret" )
 fi
+chmod 700 "$FLAKE_DIR/secrets"
+chmod 600 "$FLAKE_DIR/secrets/tg-ws-proxy-secret" 2>/dev/null || true
 
 # --- lock --------------------------------------------------------------------
-rm -f "$FLAKE_DIR/flake.lock"
-log "flake.lock удалён — соберётся заново под текущие inputs"
+# lock удаляем только по явному --reset-lock: иначе повторный запуск скрипта
+# не будет каждый раз тянуть другие версии Ryoku/nixpkgs.
+if [ "$RESET_LOCK" -eq 1 ]; then
+  rm -f "$FLAKE_DIR/flake.lock"
+  log "flake.lock удалён — inputs будут зафиксированы заново"
+elif [ -f "$FLAKE_DIR/flake.lock" ]; then
+  log "flake.lock сохранён (--reset-lock, чтобы обновить inputs)"
+else
+  log "flake.lock будет создан при первой сборке"
+fi
 
 # --- сборка ------------------------------------------------------------------
 export NIX_CONFIG="experimental-features = nix-command flakes"
 export NIXPKGS_ALLOW_UNFREE=1
+
+# Бинарные кэши нужны уже на ПЕРВОЙ сборке: nix.settings из нового конфига
+# начнёт действовать только после switch. Ключи держи в синхроне с
+# modules/hardware/kernel-cachy.nix и модулем Ryoku (binaryCache).
+NIX_CACHE_ARGS=(
+  --option extra-substituters "https://cache.lantian.pub/lantian https://ryotunes.cachix.org"
+  --option extra-trusted-public-keys "lantian:WVGO7vsRMSEN+h7Lp7kv6SAmrkEXgUGbbXm7jMDjBuQ= ryotunes.cachix.org-1:QNocajCsVm/IAMb8LPOWJi72XwqiexW9ec0UqeXLpGs="
+)
 
 cd "$FLAKE_DIR"
 
@@ -217,7 +247,7 @@ log "сборка поколения (build, система пока не мен
 build_ok=0
 for attempt in 1 2; do
   log "попытка $attempt: host $HOST"
-  if nixos-rebuild build --flake "$FLAKE_DIR#$HOST"; then
+  if nixos-rebuild build --flake "$FLAKE_DIR#$HOST" "${NIX_CACHE_ARGS[@]}"; then
     build_ok=1
     break
   fi
@@ -258,7 +288,7 @@ if [ "$BUILD_ONLY" -eq 1 ]; then
 fi
 
 log "переключаю систему (switch)"
-nixos-rebuild switch --flake "$FLAKE_DIR#$HOST"
+nixos-rebuild switch --flake "$FLAKE_DIR#$HOST" "${NIX_CACHE_ARGS[@]}"
 
 # --- пост-проверки -----------------------------------------------------------
 echo
@@ -271,6 +301,28 @@ fi
 if [ -d /run/current-system/share/wayland-sessions ]; then
   log "Wayland-сессии:"
   ls -1 /run/current-system/share/wayland-sessions | sed 's/^/      /'
+fi
+
+if systemctl is-enabled display-manager >/dev/null 2>&1; then
+  log "display-manager включён (ly)"
+else
+  warn "display-manager не включён — проверь services.displayManager.ly.enable"
+fi
+
+# NVIDIA legacy_580: проверяем, что драйвер попал в новое поколение.
+# После смены ядра nvidia-smi может не ответить до перезагрузки — это нормально.
+if [ -x /run/current-system/sw/bin/nvidia-smi ]; then
+  gpu_info="$(timeout 10 /run/current-system/sw/bin/nvidia-smi \
+    --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null || true)"
+  if [ -n "$gpu_info" ]; then
+    log "NVIDIA: $gpu_info"
+  else
+    warn "nvidia-smi есть, но GPU пока не отвечает — проверь после перезагрузки:"
+    warn "  nvidia-smi"
+    warn "  journalctl -k -b | grep -i nvidia"
+  fi
+else
+  warn "nvidia-smi не найден — проверь hardware.nvidia.package (legacy_580)"
 fi
 
 user_password_ok=0
@@ -314,6 +366,8 @@ cat <<EOF
 ${C_BLUE}Готово.${C_OFF}
   логин:        ly, сессия — ryoku-hyprland
   ядро:         $( [ "$HOST" = "nixos" ] && echo "CachyOS BORE x86_64-v3" || echo "обычное ядро nixpkgs (fallback)" )
+  GPU:          NVIDIA legacy_580 (Pascal / GTX 1050), Wayland-переменные включены
+  загрузчик:    systemd-boot, меню 3 с, 15 поколений для отката
   откат:        sudo nixos-rebuild switch --rollback
   обновление:   $( [ "$HOST" = "nixos" ] && echo "ryoku update   (или nixos-rebuild switch --flake $FLAKE_DIR#nixos)" || echo "sudo nixos-rebuild switch --flake $FLAKE_DIR#$HOST" )
 $( [ "$HOST" = "nixos" ] || echo "  ! ryoku update из Hub собирает host nixos (CachyOS-ядро) — на fallback его не используй" )

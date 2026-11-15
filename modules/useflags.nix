@@ -11,6 +11,9 @@
     cores = 4;      # по 4 потока на каждую (7 × 4 = 28)
   };
 
+  # Модули для BBR/fq: sysctl не подгружает их сам.
+  boot.kernelModules = [ "tcp_bbr" "sch_fq" ];
+
   # ── sysctl: тюнинг ядра под железо ─────────────────────────────
   boot.kernel.sysctl = {
     # Сеть
@@ -20,9 +23,15 @@
     "net.ipv4.tcp_fin_timeout" = 15;
     "net.core.rmem_max" = 16777216;
     "net.core.wmem_max" = 16777216;
+    # BBR вместо cubic: лучше держит скорость на длинных/шумных каналах
+    # (актуально для прокси и загрузки из бинарных кэшей).
+    "net.core.default_qdisc" = "fq";
+    "net.ipv4.tcp_congestion_control" = "bbr";
 
     # Память: свопимся в zram охотно (он в разы быстрее дискового swap)
     "vm.swappiness" = 150;
+    # zram отдаёт страницы по одной — readahead только мешает.
+    "vm.page-cluster" = 0;
     "vm.watermark_boost_factor" = 0;
     "vm.watermark_scale_factor" = 125;
     "vm.dirty_ratio" = 15;

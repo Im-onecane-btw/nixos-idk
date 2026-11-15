@@ -63,8 +63,8 @@
 
 ## Установка
 
-Сначала ставишь NixOS **графическим установщиком**, потом один раз запускаешь
-этот скрипт — он разложит конфиг и пересоберёт систему.
+Сначала ставишь NixOS **графическим установщиком**, потом запускаешь одну команду —
+она сама включит flakes, скачает конфиг и установит всё.
 
 Что выбрать в установщике:
 
@@ -79,43 +79,47 @@
 - под `/nix` хотя бы ~40 GiB (Ryoku + steam + wine занимают немало);
 - интернет — первая сборка тянет несколько GiB из кэшей.
 
-После первой загрузки в установленную систему:
+### Вариант 1 — одна команда (ничего вручную не клонируешь)
+
+После первой загрузки в установленную систему открой терминал и выполни:
 
 ```bash
-# на свежей NixOS git может отсутствовать. Тогда одноразово:
-nix --extra-experimental-features 'nix-command flakes' \
-  run nixpkgs#git -- clone https://github.com/Im-onecane-btw/nixos-idk ~/nixos-idk
+curl -fsSL https://raw.githubusercontent.com/Im-onecane-btw/nixos-idk/main/scripts/bootstrap.sh | sudo bash
+```
 
-# если git уже есть:
-# git clone https://github.com/Im-onecane-btw/nixos-idk ~/nixos-idk
+`bootstrap.sh` скачает архив репозитория, запустит `install.sh`, а тот уже
+сделает всё остальное (включит `nix-command flakes`, разложит конфиг, соберёт
+и переключит систему). Нужен только интернет.
 
-cd ~/nixos-idk
+### Вариант 2 — если репозиторий уже у тебя (git clone / zip с флешки)
+
+```bash
+cd ~/nixos-idk   # или куда распаковал/клонировал
 sudo bash scripts/install.sh
 ```
 
-Если bash упадёт с `$'\r': command not found` — скрипт попал в репозиторий с
-виндовыми переводами строк (бывает при заливке через веб-интерфейс GitHub).
-Лечится одной командой, после неё запускай скрипт снова:
-
-```bash
-sed -i 's/\r$//' scripts/install.sh
-```
-
-В `nixos-idk-ryoku.zip` всё уже с LF — если не хочешь возиться, распакуй его
-с флешки в `~/nixos-idk` и запускай оттуда.
+Если рядом с `install.sh` нет `flake.nix` (например, скрипт запустили отдельно),
+он сам скачает конфиг из `https://github.com/Im-onecane-btw/nixos-idk.git`.
 
 Скрипт сам:
 
-1. сделает бэкап `/etc/nixos` в `/var/backups/nixos-bootstrap/<дата>`;
-2. скопирует этот конфиг в `/etc/nixos`;
-3. сохранит `hardware-configuration.nix`, созданный установщиком;
-4. создаст `secrets/tg-ws-proxy-secret`;
-5. соберёт поколение и **только после успешной сборки** переключится;
-6. проверит Ryoku, Wayland-сессии и NVIDIA, предложит задать пароли.
+1. включит `experimental-features = nix-command flakes` в `/etc/nix/nix.conf`
+   (на свежей NixOS флейки выключены, без этого `nixos-rebuild --flake` не работает);
+2. сделает бэкап `/etc/nixos` в `/var/backups/nixos-bootstrap/<дата>`;
+3. скопирует конфиг в `/etc/nixos`;
+4. сохранит `hardware-configuration.nix`, созданный установщиком;
+5. создаст `secrets/tg-ws-proxy-secret`, если его нет;
+6. соберёт поколение и **только после успешной сборки** переключит систему;
+7. проверит Ryoku, Wayland-сессии, NVIDIA, flakes, trusted-users, flathub;
+8. скопирует конфиг в `~/nixos-idk` и предложит задать пароли.
 
 Первая сборка идёт с явно подключёнными кэшами CachyOS и Ryoku
 (`cache.lantian.pub`, `ryotunes.cachix.org`), чтобы не собирать ядро и
 Ryotunes из исходников.
+
+> Если bash упадёт с `$'\r': command not found` — файл попал с CRLF (бывает при
+> веб-заливке). Лечится: `sed -i 's/\r$//' scripts/install.sh`. В
+> `nixos-idk-ryoku.zip` всё уже с LF.
 
 Если сборка с ядром CachyOS упадёт (см. риски ниже), скрипт предложит собрать
 с обычным ядром nixpkgs — это отдельный host `nixos-stable-kernel` в том же

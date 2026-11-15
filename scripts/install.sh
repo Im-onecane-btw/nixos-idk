@@ -3,22 +3,29 @@
 #  install.sh — разворачивает этот флейк на уже установленном NixOS.
 #
 #  Сценарий: поставил NixOS графическим установщиком (UEFI, пользователь
-#  steelium, без GNOME/KDE) -> загрузился -> git clone -> запустил скрипт.
-#  Скрипт сам разложит файлы в /etc/nixos и пересоберёт систему с Ryoku,
+#  steelium, без GNOME/KDE) -> загрузился -> запустил одну команду.
+#  Скрипт сам включит flakes, при необходимости скачает репозиторий, разложит
+#  файлы в /etc/nixos, создаст секреты, соберёт и переключит систему с Ryoku,
 #  NVIDIA legacy_580 и ядром CachyOS.
 #
 #  Что делает:
-#    1. проверяет, что это NixOS в UEFI и что хватает места
-#    2. делает бэкап текущего /etc/nixos в /var/backups/nixos-bootstrap/<дата>
-#    3. копирует конфиг (из папки рядом со скриптом или из git)
-#    4. сохраняет/генерирует hardware-configuration.nix
-#    5. создаёт secrets/tg-ws-proxy-secret, если его нет
-#    6. собирает поколение (build), и только потом переключается (switch)
+#    1. включает experimental-features (nix-command, flakes) в /etc/nix/nix.conf
+#       — на свежей NixOS флейки выключены, без этого шага ничего не соберётся
+#    2. проверяет, что это NixOS в UEFI и что хватает места
+#    3. находит конфиг: папка рядом со скриптом -> --repo -> официальный репозиторий
+#       (git есть — клонирует им; нет — через nix run; нет сети для git — curl)
+#    4. делает бэкап текущего /etc/nixos в /var/backups/nixos-bootstrap/<дата>
+#    5. копирует конфиг в /etc/nixos
+#    6. сохраняет/генерирует hardware-configuration.nix
+#    7. создаёт secrets/tg-ws-proxy-secret, если его нет
+#    8. собирает поколение (build), и только потом переключается (switch)
 #       если сборка с ядром CachyOS упала — предложит собрать с обычным ядром
-#    7. проверяет Ryoku, Wayland-сессии, NVIDIA и предлагает задать пароли
+#    9. проверяет Ryoku, Wayland-сессии, NVIDIA, flakes, trusted-users, flathub
+#   10. копирует конфиг в ~<user>/nixos-idk и предлагает задать пароли
 #
 #  Использование:
 #    sudo bash scripts/install.sh
+#    curl -fsSL https://raw.githubusercontent.com/Im-onecane-btw/nixos-idk/main/scripts/bootstrap.sh | sudo bash
 #    sudo bash scripts/install.sh --repo https://github.com/Minish777/nixos-idk.git
 #    sudo bash scripts/install.sh --dry-run
 #    sudo bash scripts/install.sh --build-only
@@ -37,12 +44,15 @@
 #    -y, --yes       без вопросов
 #    -h, --help      эта справка
 # =============================================================================
+
 set -euo pipefail
 
 FLAKE_DIR=/etc/nixos
 BACKUP_DIR=/var/backups/nixos-bootstrap
 HOST=nixos
 TARGET_USER=steelium
+# Откуда брать конфиг, если рядом со скриптом нет flake.nix и не указан --repo.
+DEFAULT_REPO=https://github.com/Im-onecane-btw/nixos-idk.git
 REPO_URL=""
 BRANCH=""
 DRY_RUN=0
@@ -50,6 +60,17 @@ ASSUME_YES=0
 BUILD_ONLY=0
 SKIP_PASSWORDS=0
 RESET_LOCK=0
+# Скрипт запущен через `curl ... | sudo bash` — у него нет flake.nix рядом,
+# тогда он скачает репозиторий сам, но не сможет до него дочитать (exit 0 у
+# pipe). Поэтому в конце дёргает install.sh из /etc/nixos.
+PIPED_BOOTSTRAP=0
+
+# Если скрипт запущен стримом (`curl ... | sudo bash`), stdin — pipe. Вопросы
+# всё равно можно задать через /dev/tty (если есть терминал), поэтому --yes
+# не форсируем; флаг нужен только чтобы понимать контекст в конце.
+if [ ! -t 0 ]; then
+  PIPED_BOOTSTRAP=1
+fi
 
 # --- вывод -------------------------------------------------------------------
 if [ -t 1 ]; then
@@ -80,9 +101,33 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-SELF="${BASH_SOURCE[0]}"
-SELF_DIR="$(cd -- "$(dirname -- "$SELF")" && pwd)"
-LOCAL_ROOT="$(cd -- "$SELF_DIR/.." && pwd)"
+SELF="${BASH_SOURCE[0]-$0}"
+if [ -r "$SELF" ] && [ "$SELF" != "/dev/stdin" ] && [ "${SELF#/dev/fd/}" = "$SELF" ]; then
+  SELF_DIR="$(cd -- "$(dirname -- "$SELF")" && pwd)"
+  LOCAL_ROOT="$(cd -- "$SELF_DIR/.." && pwd)"
+else
+  # Скрипт пришёл из pipe/process substitution — рядом с ним ничего нет.
+  SELF_DIR=""
+  LOCAL_ROOT=""
+fi
+
+ask() {
+  # Читает ответ в $REPLY. В неинтерактивном режиме возвращает 1 (по умолчанию «нет»).
+  # При piped-запуске, но с доступным /dev/tty, всё равно спрашиваем у человека.
+  local prompt="$1"
+  if [ -t 0 ]; then
+    printf '%s' "$prompt"
+    IFS= read -r REPLY || return 1
+    return 0
+  elif [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    printf '%s' "$prompt" > /dev/tty
+    IFS= read -r REPLY < /dev/tty || return 1
+    return 0
+  else
+    REPLY=""
+    return 1
+  fi
+}
 
 # --- root --------------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
@@ -91,6 +136,52 @@ if [ "$(id -u)" -ne 0 ]; then
   log "нужен root, перезапускаю через sudo"
   exec sudo -- bash "$SELF_DIR/$(basename -- "$SELF")" "${ORIG_ARGS[@]}"
 fi
+
+# --- flakes ------------------------------------------------------------------
+# На свежей NixOS experimental-features пустой: `nixos-rebuild --flake` и любой
+# `nix` командой без флага просто падают. Включаем flake-режим до всех вызовов
+# nix и оставляем его в системе (NixOS позже перезапишет nix.conf из
+# nix.settings.experimental-features в configuration.nix — там он уже есть).
+export NIX_CONFIG="experimental-features = nix-command flakes"
+export NIXPKGS_ALLOW_UNFREE=1
+
+if ! command -v nix >/dev/null 2>&1; then
+  echo "[x] nix не найден в PATH — это не установленный NixOS или PATH не загружен" >&2
+  exit 1
+fi
+
+enable_flakes() {
+  mkdir -p /etc/nix
+  if [ -L /etc/nix/nix.conf ]; then
+    # /etc/nix/nix.conf — симлинк в /etc/static; дописывать в него нельзя,
+    # делаем обычный файл с тем же содержимым.
+    cp --remove-destination "$(readlink -f /etc/nix/nix.conf)" /etc/nix/nix.conf
+  elif [ ! -e /etc/nix/nix.conf ]; then
+    : > /etc/nix/nix.conf
+  fi
+
+  local have_flakes=0
+  if grep -qsE '^[[:space:]]*experimental-features[[:space:]]*=' /etc/nix/nix.conf &&
+     grep -qsE '^[[:space:]]*experimental-features[[:space:]]*=.*\bflakes\b' /etc/nix/nix.conf &&
+     grep -qsE '^[[:space:]]*experimental-features[[:space:]]*=.*\bnix-command\b' /etc/nix/nix.conf; then
+    have_flakes=1
+  fi
+
+  if [ "$have_flakes" -eq 0 ]; then
+    # Nix читает ключи по порядку и последнее значение выигрывает, поэтому
+    # дописывание в конец безопасно.
+    printf 'experimental-features = nix-command flakes\n' >> /etc/nix/nix.conf
+    log "включил flakes в /etc/nix/nix.conf"
+  else
+    log "flakes уже включены в /etc/nix/nix.conf"
+  fi
+
+  nix config show experimental-features 2>/dev/null | grep -qw flakes \
+    && log "проверка: nix видит flake-режим" \
+    || warn "nix не подтвердил flake-режим — проверь /etc/nix/nix.conf"
+}
+
+enable_flakes
 
 # --- проверки хоста ----------------------------------------------------------
 [ -e /etc/NIXOS ] || die "это не NixOS (/etc/NIXOS не найден)"
@@ -116,20 +207,54 @@ TMP_DIR=""
 cleanup() { [ -n "$TMP_DIR" ] && rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-if [ -n "$REPO_URL" ]; then
-  command -v git >/dev/null 2>&1 || die "для --repo нужен git"
-  TMP_DIR="$(mktemp -d)"
-  log "клонирую $REPO_URL"
-  if [ -n "$BRANCH" ]; then
-    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$TMP_DIR/src"
+# Клонирует репозиторий $1 в $2. Три способа подряд: на свежей NixOS может не
+# быть git, а если git есть — он всё равно не поможет без сети.
+#   git в PATH -> nix run nixpkgs#git -> curl + tar-архив ветки
+clone_repo() {
+  local url="$1" dest="$2" tarball
+  if command -v git >/dev/null 2>&1; then
+    if [ -n "$BRANCH" ]; then
+      git clone --depth 1 --branch "$BRANCH" "$url" "$dest" && return 0
+    else
+      git clone --depth 1 "$url" "$dest" && return 0
+    fi
+    warn "git clone не удался — пробую другой способ"
   else
-    git clone --depth 1 "$REPO_URL" "$TMP_DIR/src"
+    log "git не установлен — тяну его разово через nix run"
+    if [ -n "$BRANCH" ]; then
+      nix run nixpkgs#git -- clone --depth 1 --branch "$BRANCH" "$url" "$dest" && return 0
+    else
+      nix run nixpkgs#git -- clone --depth 1 "$url" "$dest" && return 0
+    fi
+    warn "nix run git не сработал — пробую скачать архив"
   fi
+
+  # Последний вариант: tar-архив ветки. curl входит в corePackages NixOS,
+  # то есть есть всегда, даже без git и без flake-режима.
+  command -v curl >/dev/null 2>&1 || return 1
+  tarball="${url%.git}/archive/refs/heads/${BRANCH:-main}.tar.gz"
+  mkdir -p "$dest"
+  curl -fsSL "$tarball" | tar -xz -C "$dest" --strip-components=1
+}
+
+TMP_DIR="$(mktemp -d)"
+
+# Если скрипт запущен стримом (`curl ... | sudo bash`), его собственная папка —
+# это /dev/fd/63, а flake-файлов рядом нет. Тогда доверяем уже скачанному
+# конфигу в TMP_DIR и не лезем в BASH_SOURCE.
+if [ -n "$REPO_URL" ]; then
+  log "клонирую $REPO_URL"
+  clone_repo "$REPO_URL" "$TMP_DIR/src" \
+    || die "не удалось получить конфиг из $REPO_URL"
   SRC="$TMP_DIR/src"
-elif [ -f "$LOCAL_ROOT/flake.nix" ]; then
-  SRC="$LOCAL_ROOT"
+elif [ "$PIPED_BOOTSTRAP" -eq 1 ] || [ ! -f "$LOCAL_ROOT/flake.nix" ]; then
+  warn "рядом со скриптом нет flake.nix — беру официальный репозиторий"
+  log "клонирую $DEFAULT_REPO"
+  clone_repo "$DEFAULT_REPO" "$TMP_DIR/src" \
+    || die "не удалось скачать $DEFAULT_REPO — укажи --repo URL или положи конфиг рядом со скриптом"
+  SRC="$TMP_DIR/src"
 else
-  die "рядом со скриптом нет flake.nix; укажи --repo URL"
+  SRC="$LOCAL_ROOT"
 fi
 
 [ -f "$SRC/configuration.nix" ] || die "в $SRC нет configuration.nix"
@@ -141,6 +266,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   cat <<EOF
 
 План (--dry-run, ничего не меняется):
+  0. включить flakes в /etc/nix/nix.conf (сделано до этого вывода)
   1. бэкап $FLAKE_DIR -> $BACKUP_DIR/<дата>
   2. копирование $SRC -> $FLAKE_DIR (без .git)
   3. hardware-configuration.nix: сохранить существующий или сгенерировать
@@ -149,16 +275,20 @@ if [ "$DRY_RUN" -eq 1 ]; then
   6. nixos-rebuild build --flake $FLAKE_DIR#$HOST (с кэшами CachyOS + Ryoku)
 $( [ "$BUILD_ONLY" -eq 1 ] && echo "  7. (--build-only: switch пропускается)" || echo "  7. nixos-rebuild switch --flake $FLAKE_DIR#$HOST" )
   8. при падении сборки — предложение собрать с обычным ядром (host nixos-stable-kernel)
-  9. проверка ryoku, Wayland-сессий, NVIDIA + пароли
+  9. проверка ryoku, Wayland-сессий, NVIDIA, flakes, trusted-users, flathub
+ 10. клон конфига в ~$TARGET_USER/nixos-idk, пароли
 
 EOF
   exit 0
 fi
 
 if [ "$ASSUME_YES" -eq 0 ]; then
-  printf 'Продолжить? [y/N] '
-  read -r answer
-  case "$answer" in y|Y|yes|YES) ;; *) die "отменено" ;; esac
+  if ask 'Продолжить? [y/N] '; then
+    case "$REPLY" in y|Y|yes|YES) ;; *) die "отменено" ;; esac
+  else
+    # Нет ни tty, ни /dev/tty — неинтерактивный запуск: продолжаем.
+    warn "нет терминала для подтверждения — продолжаю автоматически"
+  fi
 fi
 
 # --- бэкап -------------------------------------------------------------------
@@ -230,9 +360,6 @@ else
 fi
 
 # --- сборка ------------------------------------------------------------------
-export NIX_CONFIG="experimental-features = nix-command flakes"
-export NIXPKGS_ALLOW_UNFREE=1
-
 # Бинарные кэши нужны уже на ПЕРВОЙ сборке: nix.settings из нового конфига
 # начнёт действовать только после switch. Ключи держи в синхроне с
 # modules/hardware/kernel-cachy.nix и модулем Ryoku (binaryCache).
@@ -254,18 +381,27 @@ for attempt in 1 2; do
 
   # Самая частая причина падения — nvidia legacy_580 против нового ядра
   # CachyOS. Для этого в флейке есть второй host с обычным ядром nixpkgs.
-  if [ "$HOST" != "nixos" ] || [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ]; then
+  if [ "$HOST" != "nixos" ]; then
     break
+  fi
+
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    warn "сборка с CachyOS упала — пробую nixos-stable-kernel"
+    HOST=nixos-stable-kernel
+    continue
   fi
 
   warn "сборка не удалась. Вероятная причина: nvidia legacy_580 не собирается"
   warn "против ядра CachyOS (или ядро x86_64-v3 не тянет это железо)."
-  printf 'Собрать с обычным ядром nixpkgs (host nixos-stable-kernel)? [Y/n] '
-  read -r k
-  case "$k" in
-    n|N) break ;;
-    *)   HOST=nixos-stable-kernel ;;
-  esac
+  if ask 'Собрать с обычным ядром nixpkgs (host nixos-stable-kernel)? [Y/n] '; then
+    case "$REPLY" in
+      n|N) break ;;
+      *)   HOST=nixos-stable-kernel ;;
+    esac
+  else
+    warn "нет терминала — пробую nixos-stable-kernel автоматически"
+    HOST=nixos-stable-kernel
+  fi
 done
 
 if [ "$build_ok" -ne 1 ]; then
@@ -309,6 +445,33 @@ else
   warn "display-manager не включён — проверь services.displayManager.ly.enable"
 fi
 
+# NixOS перезаписал /etc/nix/nix.conf из declarative-настроек: проверяем, что
+# flakes и доверенные пользователи действительно попали в конфиг.
+if grep -qsE '^[[:space:]]*experimental-features[[:space:]]*=.*flakes' /etc/nix/nix.conf; then
+  log "flakes включены системно (/etc/nix/nix.conf)"
+else
+  # На случай, если конфиг не пересоздался (или пользователь его правил):
+  # дописываем и просим пересобрать позже.
+  printf 'experimental-features = nix-command flakes\n' >> /etc/nix/nix.conf
+  warn "flakes не были в /etc/nix/nix.conf — дописал, перезайди после перезагрузки"
+fi
+if nix config show trusted-users 2>/dev/null | grep -q '@wheel'; then
+  log "wheel в trusted-users: nix работает без sudo"
+else
+  warn "wheel нет в nix.settings.trusted-users — nix будет просить sudo"
+fi
+
+# Flatpak: подключаем flathub, чтобы приложения ставились без ручных команд.
+FLATPAK=/run/current-system/sw/bin/flatpak
+if [ -x "$FLATPAK" ]; then
+  if "$FLATPAK" remote-add --if-not-exists flathub \
+       https://flathub.org/repo/flathub.flatpakrepo >/dev/null 2>&1; then
+    log "flatpak: flathub подключён"
+  else
+    warn "flatpak: flathub не добавлен (нет сети? повтори: flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo)"
+  fi
+fi
+
 # NVIDIA legacy_580: проверяем, что драйвер попал в новое поколение.
 # После смены ядра nvidia-smi может не ответить до перезагрузки — это нормально.
 if [ -x /run/current-system/sw/bin/nvidia-smi ]; then
@@ -332,28 +495,70 @@ if id "$TARGET_USER" >/dev/null 2>&1; then
   esac
 fi
 
-if [ "$SKIP_PASSWORDS" -eq 0 ]; then
-  if [ -t 0 ] && id "$TARGET_USER" >/dev/null 2>&1; then
+# --- пользователь: пароль, fish, группы --------------------------------------
+# install.sh уже отработал switch, поэтому пользователь из configuration.nix
+# существует. Если его нет (например, сменили --user или имя в конфиге) —
+# заводим здесь, чтобы после перезагрузки было под кем войти в ly.
+if ! id "$TARGET_USER" >/dev/null 2>&1; then
+  log "создаю пользователя $TARGET_USER"
+  useradd -m -s /run/current-system/sw/bin/fish -G wheel,networkmanager,video,render,audio,input "$TARGET_USER" \
+    || warn "не удалось создать $TARGET_USER — проверь users.users в configuration.nix"
+fi
+
+if [ "$SKIP_PASSWORDS" -eq 0 ] && id "$TARGET_USER" >/dev/null 2>&1; then
+  can_ask=0
+  if [ -t 0 ] || { [ -r /dev/tty ] && [ -w /dev/tty ]; }; then can_ask=1; fi
+  if [ "$can_ask" -eq 1 ]; then
     echo
     if [ "$user_password_ok" -eq 1 ]; then
-      printf 'Пароль у %s уже задан. Сменить? [y/N] ' "$TARGET_USER"
-      read -r a
-      case "$a" in y|Y) if passwd "$TARGET_USER"; then user_password_ok=1; fi ;; esac
+      if ask "Пароль у $TARGET_USER уже задан. Сменить? [y/N] "; then
+        case "$REPLY" in y|Y) passwd "$TARGET_USER" && user_password_ok=1 || true ;; esac
+      fi
     else
-      printf 'Задать пароль для %s (без пароля ly не пустит в систему)? [Y/n] ' "$TARGET_USER"
-      read -r a
-      case "$a" in
-        n|N) ;;
-        *)   if passwd "$TARGET_USER"; then user_password_ok=1; fi ;;
-      esac
+      if ask "Задать пароль для $TARGET_USER (без пароля ly не пустит в систему)? [Y/n] "; then
+        case "$REPLY" in
+          n|N) ;;
+          *)   passwd "$TARGET_USER" && user_password_ok=1 || true ;;
+        esac
+      else
+        passwd "$TARGET_USER" && user_password_ok=1 || warn "пароль $TARGET_USER не задан"
+      fi
     fi
 
-    printf 'Задать/сменить пароль root? [y/N] '
-    read -r b
-    case "$b" in y|Y) passwd root || warn "пароль root не изменён" ;; esac
+    if ask 'Задать/сменить пароль root? [y/N] '; then
+      case "$REPLY" in y|Y) passwd root || warn "пароль root не изменён" ;; esac
+    fi
   else
     warn "нет интерактивного терминала — пароли не запрашивались"
   fi
+fi
+
+# --- домашняя копия репозитория ----------------------------------------------
+# /etc/nixos мы чистим при каждом запуске и убираем из него .git (иначе Nix
+# соберёт только tracked-файлы и потеряет hardware-configuration.nix). Поэтому
+# для Hub/ryoku update и ручной работы с git держим клон у пользователя.
+if id "$TARGET_USER" >/dev/null 2>&1 && [ -d /home/"$TARGET_USER" ]; then
+  HOME_COPY="/home/$TARGET_USER/nixos-idk"
+  if [ ! -d "$HOME_COPY" ]; then
+    log "копирую конфиг в $HOME_COPY"
+    mkdir -p "$HOME_COPY"
+    cp -a "$FLAKE_DIR"/. "$HOME_COPY"/
+    chown -R "$TARGET_USER:$TARGET_USER" "$HOME_COPY"
+  else
+    log "копия репозитория уже есть: $HOME_COPY"
+  fi
+  # Официальный remote, чтобы потом можно было `git pull` (git нужен, но его
+  # ставит сам конфиг; на первом запуске его ещё нет — тогда просто пропускаем).
+  if [ -d "$HOME_COPY/.git" ] && command -v git >/dev/null 2>&1; then
+    git -C "$HOME_COPY" remote set-url origin "$DEFAULT_REPO" 2>/dev/null \
+      || git -C "$HOME_COPY" remote add origin "$DEFAULT_REPO" 2>/dev/null \
+      || true
+  fi
+fi
+
+# ryoku update и Hub ищут флейк в /etc/nixos — проверяем, что он там есть.
+if [ ! -f "$FLAKE_DIR/flake.nix" ]; then
+  warn "в $FLAKE_DIR нет flake.nix — ryoku update не найдёт конфиг"
 fi
 
 if id "$TARGET_USER" >/dev/null 2>&1 && [ "$user_password_ok" -ne 1 ]; then
@@ -378,3 +583,12 @@ $( [ "$HOST" = "nixos" ] || echo "  ! ryoku update из Hub собирает hos
   ryoku doctor
   journalctl -b -u display-manager
 EOF
+
+# Если install.sh запустили прямо стримом (curl .../install.sh | sudo bash),
+# терминала для вопросов всё равно нет: повторный запуск оттуда же бесполезен.
+# Лучше использовать bootstrap.sh (он скачает репозиторий и запустит скрипт
+# обычным процессом) либо выполнить установку в интерактивной оболочке.
+if [ "$PIPED_BOOTSTRAP" -eq 1 ]; then
+  warn "установка шла без терминала (stdin — pipe). Пароли и интерактивные шаги пропущены."
+  warn "рекомендуется запустить: sudo bash $FLAKE_DIR/scripts/install.sh"
+fi

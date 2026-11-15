@@ -88,6 +88,8 @@
     description = "steelium";
     extraGroups = [ "networkmanager" "wheel" "video" "render" "audio" "input" ];
     shell = pkgs.fish;
+    # Стартовый пароль, если установщик его не задал (install.sh спросит смену
+    # при первом запуске). Смени сразу после входа: `passwd`.
     # initialPassword = "changeme";
   };
 
@@ -115,7 +117,15 @@
   # Раскидывает IRQ по 28 потокам Xeon — меньше «залипаний» под нагрузкой.
   services.irqbalance.enable = true;
 
+  # Флейки включаем декларативно, а не только одноразовым флагом: иначе
+  # `ryoku update`, `nixos-rebuild --flake` и Hub после перезагрузки упрутся в
+  # «experimental feature disabled». install.sh дублирует то же в /etc/nix/nix.conf
+  # до первой сборки (в свежей установке nix.conf ещё не пересоздан NixOS).
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+
+  # Без этого любой `nix`/`nixos-rebuild --flake` под пользователем просит sudo
+  # и падает на «cannot write to Nix store». wheel уже в sudoers.
+  nix.settings.trusted-users = [ "root" "@wheel" ];
 
   zramSwap.enable = true;
 

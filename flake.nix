@@ -36,11 +36,16 @@
     };
   };
 
-  outputs = { self, nixpkgs, cachyos, ryoku, zen-browser, spicetify-nix, tg-ws-proxy, lyricspot, ... }@inputs: {
-    nixosConfigurations = {
-      nixos = nixpkgs.lib.nixosSystem {
+  outputs = { self, nixpkgs, ryoku, spicetify-nix, tg-ws-proxy, lyricspot, ... }@inputs:
+    let
+      # Одна и та же система, два варианта ядра:
+      #   useCachyKernel = true  -> CachyOS BORE x86_64-v3 + его бинарный кэш
+      #   useCachyKernel = false -> обычное ядро nixpkgs
+      # Нужно потому, что NVIDIA legacy_580 (последняя ветка для Pascal)
+      # не всегда собирается против слишком нового ядра CachyOS.
+      mkSystem = useCachyKernel: nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
-        specialArgs = { inherit inputs; };
+        specialArgs = { inherit inputs useCachyKernel; };
         modules = [
           ./configuration.nix
           ./modules/spicetify.nix
@@ -52,6 +57,11 @@
           ryoku.nixosModules.default
         ];
       };
+    in
+    {
+      nixosConfigurations = {
+        nixos = mkSystem true;
+        nixos-stable-kernel = mkSystem false;
+      };
     };
-  };
 }

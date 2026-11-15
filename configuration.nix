@@ -2,9 +2,8 @@
 
 {
   imports = [
-    # Системное железо после установки.
-    # ЭТОГО ФАЙЛА НЕТ В РЕПОЗИТОРИИ — сгенерируй его на новой машине:
-    #   sudo nixos-generate-config --show-hardware-config > /etc/nixos/hardware-configuration.nix
+    # Системное железо. Появляется само после установки NixOS
+    # (или его сгенерирует scripts/install.sh).
     ./hardware-configuration.nix
 
     # Твои кастомные модули
@@ -12,8 +11,9 @@
     ./modules/hardware/nvidia-wayland.nix
     ./modules/hardware/kernel.nix
 
-    # Ryoku: сам включает Hyprland/niri/Mango, оболочку, SDDM со своей темой,
-    # порталы, PipeWire, Bluetooth, keyring и user-сервисы.
+    # Ryoku: сам включает Hyprland/niri/Mango, оболочку, порталы, PipeWire,
+    # Bluetooth, keyring и user-сервисы. SDDM он включает только если не выбран
+    # другой логин-менеджер — у нас ly, поэтому SDDM не появится.
     # Отдельные hyprland.nix / noctalia.nix / minimal (dwl) больше не нужны.
     ./modules/ryoku.nix
 
@@ -63,10 +63,16 @@
     options = "grp:alt_shift_toggle";
   };
 
-  # Логин-менеджер: Ryoku сам включает SDDM с Ryoku-темой и Wayland-гритером
-  # (X-сервер у нас выключен, порт это поддерживает).
-  # Если SDDM будет капризничать на NVIDIA — верни ly, Ryoku его не тронет:
-  # services.displayManager.ly.enable = true;
+  # Логин-менеджер: ly (TUI, работает до графики, X-сервер ему не нужен).
+  # Ryoku видит включённый ly и не навязывает свой SDDM. Сессии
+  # ryoku-hyprland / ryoku-niri / ryoku-mango попадают в список ly сами
+  # (через services.displayManager.sessionPackages).
+  services.displayManager.ly.enable = true;
+
+  # Нужен для автологина и как «сессия по умолчанию» для systemd.
+  # В самом ly сессия всё равно выбирается стрелками — первой в списке
+  # будет ryoku-hyprland.
+  services.displayManager.defaultSession = "ryoku-hyprland";
 
   # gamemode
   programs.gamemode.enable = true;

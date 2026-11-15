@@ -76,6 +76,8 @@ LOCAL_ROOT="$(cd -- "$SELF_DIR/.." && pwd)"
 
 # --- root --------------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
+  command -v sudo >/dev/null 2>&1 \
+    || die "нужен root, а sudo не найден — запусти скрипт из-под root"
   log "нужен root, перезапускаю через sudo"
   exec sudo -- bash "$SELF_DIR/$(basename -- "$SELF")" "${ORIG_ARGS[@]}"
 fi
@@ -312,7 +314,8 @@ ${C_BLUE}Готово.${C_OFF}
   логин:        ly, сессия — ryoku-hyprland
   ядро:         $( [ "$HOST" = "nixos" ] && echo "CachyOS BORE x86_64-v3" || echo "обычное ядро nixpkgs (fallback)" )
   откат:        sudo nixos-rebuild switch --rollback
-  обновление:   ryoku update   (или nixos-rebuild switch --flake $FLAKE_DIR#$HOST)
+  обновление:   $( [ "$HOST" = "nixos" ] && echo "ryoku update   (или nixos-rebuild switch --flake $FLAKE_DIR#nixos)" || echo "sudo nixos-rebuild switch --flake $FLAKE_DIR#$HOST" )
+$( [ "$HOST" = "nixos" ] || echo "  ! ryoku update из Hub собирает host nixos (CachyOS-ядро) — на fallback его не используй" )
   бэкап старого конфига: $backup
 
 После перезагрузки выбирай в ly сессию Hyprland — это Ryoku.

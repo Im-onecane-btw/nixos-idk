@@ -130,6 +130,9 @@ sudo nixos-rebuild switch --flake /etc/nixos#nixos
    подключается `modules/hardware/kernel-stable.nix` вместо `kernel-cachy.nix`).
    `install.sh` предложит его сам, если сборка упала; вручную:
    `sudo ./scripts/install.sh --host nixos-stable-kernel`.
+   Если остался на этом host'е, обновляйся явно:
+   `sudo nixos-rebuild switch --flake /etc/nixos#nixos-stable-kernel`
+   (`ryoku update` из Hub собирает host по имени машины, то есть `nixos`).
 2. **Смешение mesa.** Ryoku принудительно ставит свою mesa из закреплённого
    nixpkgs (`mkForce`), а твои `hardware.graphics.extraPackages`
    (`nvidia-vaapi-driver` и т.п.) — из хостового. Если сломается VA-API —

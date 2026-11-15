@@ -7,9 +7,10 @@
     ./hardware-configuration.nix
 
     # Твои кастомные модули
+    # Ядро сюда НЕ импортируется: flake.nix подключает kernel-cachy.nix
+    # (host nixos) или kernel-stable.nix (host nixos-stable-kernel).
     ./modules/hardware/nvidia.nix
     ./modules/hardware/nvidia-wayland.nix
-    ./modules/hardware/kernel.nix
 
     # Ryoku: сам включает Hyprland/niri/Mango, оболочку, порталы, PipeWire,
     # Bluetooth, keyring и user-сервисы. SDDM он включает только если не выбран

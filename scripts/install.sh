@@ -90,7 +90,7 @@ if [ -n "${avail:-}" ] && [ "$avail" -lt 20971520 ]; then
 fi
 
 grep -qm1 '^flags.*\bavx2\b' /proc/cpuinfo \
-  || warn "у CPU нет AVX2, а в конфиге ядро cachyos-bore-x86_64-v3 — убери boot.kernelPackages в modules/hardware/kernel.nix"
+  || warn "у CPU нет AVX2, а host nixos собирает ядро cachyos-bore-x86_64-v3 — используй --host nixos-stable-kernel"
 
 awk '$2=="/boot"{found=1} END{exit !found}' /proc/mounts \
   || warn "/boot не смонтирован отдельно — проверь, что ESP на месте, иначе systemd-boot не установится"

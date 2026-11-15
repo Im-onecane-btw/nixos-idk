@@ -23,12 +23,16 @@
 
 ## Что добавлено
 
-- `flake.nix`: input `ryoku` + `ryoku.nixosModules.default`.
+- `flake.nix`: input `ryoku` + `ryoku.nixosModules.default`; два host'а —
+  `nixos` (ядро CachyOS) и `nixos-stable-kernel` (обычное ядро nixpkgs).
 - `modules/ryoku.nix`: `programs.ryoku` — `defaultCompositor = "hyprland"`,
   `browser = null` (берёт твой firefox из PATH, второй не ставит),
   `shell = "fish"`, `updateFlake = "/etc/nixos"`.
 - `scripts/install.sh`: установка одной командой (см. ниже).
 - `modules/hardware/nvidia-wayland.nix`: NVIDIA + Wayland env.
+- `modules/hardware/kernel-cachy.nix` / `kernel-stable.nix`: ядро вынесено из
+  `configuration.nix`, чтобы варианты не конфликтовали. Раньше это был один
+  `kernel.nix`.
 
 ## Исправленные проблемы исходного конфига
 
@@ -62,6 +66,13 @@
 - UEFI-установка NixOS (конфиг использует systemd-boot);
 - свободно хотя бы ~40 GiB в `/nix` (Ryoku + steam + wine занимают немало);
 - эта папка на флешке или в `git clone`.
+
+При установке NixOS:
+
+- в графическом установщике **не выбирай GNOME/KDE** — десктоп даст Ryoku,
+  лишняя среда только наставит конфликтующих сервисов;
+- создай пользователя `steelium` (или потом запусти скрипт с `--user <имя>`);
+- пароль, который задашь при установке, останется твоим паролем для ly.
 
 1. Ставишь NixOS как обычно (UEFI, btrfs или ext4 — не важно).
 2. Копируешь эту папку на машину (флешка/`git clone`) — например в `~/nixos-idk`.
@@ -115,7 +126,8 @@ sudo nixos-rebuild switch --flake /etc/nixos#nixos
 
 1. **`nvidia legacy_580` + ядро CachyOS (6.1x).** 580 — последняя ветка с
    Pascal, может не собраться против слишком нового ядра. Для этого в флейке
-   есть второй host: `nixos-stable-kernel` (то же самое, но ядро из nixpkgs).
+   есть второй host: `nixos-stable-kernel` (то же самое, но ядро из nixpkgs —
+   подключается `modules/hardware/kernel-stable.nix` вместо `kernel-cachy.nix`).
    `install.sh` предложит его сам, если сборка упала; вручную:
    `sudo ./scripts/install.sh --host nixos-stable-kernel`.
 2. **Смешение mesa.** Ryoku принудительно ставит свою mesa из закреплённого

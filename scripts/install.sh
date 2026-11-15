@@ -151,6 +151,7 @@ if [ "$ASSUME_YES" -eq 0 ]; then
 fi
 
 # --- бэкап -------------------------------------------------------------------
+mkdir -p "$FLAKE_DIR"
 ts="$(date +%Y%m%d-%H%M%S)"
 backup="$BACKUP_DIR/$ts"
 mkdir -p "$backup"

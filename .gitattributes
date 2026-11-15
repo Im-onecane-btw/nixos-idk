@@ -4,3 +4,6 @@
 *.sh text eol=lf
 *.nix text eol=lf
 *.md text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.ttf binary

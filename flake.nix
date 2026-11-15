@@ -5,8 +5,14 @@
     # Актуальный нестабильный канал NixOS
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
+    # Ryoku on NixOS — официальный декларативный порт десктопа Ryoku
+    # (Hyprland + niri + MangoWM, оболочка Quickshell, Hub, Ryostore).
+    ryoku.url = "github:Ryoku-dev/Ryoku-on-NixOS";
+
     # tg-ws-proxy
-    tg-ws-proxy.url = "path:/etc/nixos/flakes/tg-ws-proxy";
+    # Относительный путь, а не path:/etc/nixos/... — флейк больше не привязан
+    # к одному каталогу и собирается из любого места.
+    tg-ws-proxy.url = "path:./flakes/tg-ws-proxy";
 
     # Репозиторий ядра CachyOS
     cachyos = {
@@ -17,26 +23,20 @@
     # millennium
     millennium.url = "github:SteamClientHomebrew/Millennium?dir=packages/nix";
 
-    # Шелл Noctalia (без указания несуществующих веток/тегов)
-    noctalia = {
-      url = "github:noctalia-dev/noctalia";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
-
     # spicetify
     spicetify-nix.url = "github:Gerg-L/spicetify-nix";
 
     # lyricspot
-    lyricspot.url = "path:/etc/nixos/flakes/lyricspot";
-    
+    lyricspot.url = "path:./flakes/lyricspot";
+
     # Zen Browser флок
-        zen-browser = {
-          url = "github:0xc000022070/zen-browser-flake";
-          inputs.nixpkgs.follows = "nixpkgs";
-    		};
+    zen-browser = {
+      url = "github:0xc000022070/zen-browser-flake";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
-  outputs = { self, nixpkgs, cachyos, noctalia, zen-browser, spicetify-nix, tg-ws-proxy, lyricspot, ... }@inputs: {
+  outputs = { self, nixpkgs, cachyos, ryoku, zen-browser, spicetify-nix, tg-ws-proxy, lyricspot, ... }@inputs: {
     nixosConfigurations = {
       nixos = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
@@ -47,9 +47,11 @@
           spicetify-nix.nixosModules.spicetify
           tg-ws-proxy.nixosModules.default
           lyricspot.nixosModules.default
+
+          # Десктоп целиком приходит из этого модуля
+          ryoku.nixosModules.default
         ];
       };
     };
   };
 }
-
